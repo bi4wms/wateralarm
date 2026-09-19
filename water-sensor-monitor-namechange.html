@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>水浸传感器监控系统</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+    }
+    body { background: var(--bg); color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+    .node-card { transition: all 0.2s; }
+    .node-card.alarm { animation: blink 0.8s infinite; border-color: #ef4444 !important; background: #7f1d1d !important; }
+    @keyframes blink {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.7); }
+      50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
+    }
+    .log-area { font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; }
+    .scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+    .scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .online { background: #22c55e; }
+    .offline { background: #64748b; }
+    .alarm-dot { background: #ef4444; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+
+  <!-- 顶部栏 -->
+  <header class="bg-slate-900 border-b border-slate-700 px-4 py-3 flex items-center justify-between flex-shrink-0">
+    <div class="flex items-center gap-4">
+      <h1 class="text-xl font-bold text-cyan-400">💧 水浸传感器监控系统</h1>
+      <span id="connStatus" class="text-sm px-3 py-1 rounded-full bg-slate-700 text-slate-300">未连接</span>
+    </div>
+    <div class="flex items-center gap-3">
+      <div class="text-sm space-x-4">
+        <span>在线: <b id="statOnline" class="text-green-400">0</b></span>
+        <span>离线: <b id="statOffline" class="text-slate-400">100</b></span>
+        <span>告警: <b id="statAlarm" class="text-red-400">0</b></span>
+      </div>
+      <button id="btnConnect" class="bg-cyan-600 hover:bg-cyan-500 px-4 py-2 rounded-lg font-medium transition">连接串口</button>
+      <button id="btnDisconnect" class="bg-slate-600 hover:bg-slate-500 px-4 py-2 rounded-lg font-medium transition hidden">断开</button>
+      <button id="btnSettings" class="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-lg">⚙</button>
+    </div>
+  </header>
+
+  <div class="flex flex-1 overflow-hidden">
+    <!-- 左侧节点列表 -->
+    <aside class="w-80 bg-slate-900 border-r border-slate-700 flex flex-col">
+      <div class="p-3 border-b border-slate-700">
+        <input id="searchInput" type="text" placeholder="搜索节点号或名称..." class="w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm focus:outline-none focus:border-cyan-500">
+        <div class="flex gap-2 mt-2 text-xs">
+          <button data-filter="all" class="filter-btn active px-2 py-1 rounded bg-cyan-700">全部</button>
+          <button data-filter="alarm" class="filter-btn px-2 py-1 rounded bg-slate-700">告警</button>
+          <button data-filter="online" class="filter-btn px-2 py-1 rounded bg-slate-700">在线</button>
+          <button data-filter="offline" class="filter-btn px-2 py-1 rounded bg-slate-700">离线</button>
+        </div>
+      </div>
+      <div id="nodeList" class="flex-1 overflow-y-auto scrollbar p-2 space-y-1"></div>
+    </aside>
+
+    <!-- 中间详情 + 日志 -->
+    <main class="flex-1 flex flex-col overflow-hidden">
+      <!-- 选中节点详情 -->
+      <div id="detailPanel" class="bg-slate-800 border-b border-slate-700 p-4 hidden">
+        <div class="flex justify-between items-start">
+          <div>
+            <h2 class="text-2xl font-bold">
+              <span id="detailName">节点</span>
+              <span class="text-base text-slate-400 font-normal ml-2">(#<span id="detailId">-</span>)</span>
+            </h2>
+            <p id="detailStatus" class="mt-1 text-lg"></p>
+          </div>
+          <div class="text-right text-sm text-slate-400 space-y-1">
+            <div>最后心跳: <span id="detailLastHb">-</span></div>
+            <div>最后告警: <span id="detailLastAl">-</span></div>
+            <div>RSSI: <span id="detailRssi">-</span> | 电池: <span id="detailBat">-</span></div>
+          </div>
+        </div>
+        <div class="mt-3 flex gap-2">
+          <button id="btnEditName" class="bg-cyan-700 hover:bg-cyan-600 px-4 py-1.5 rounded text-sm">✏️ 修改名称</button>
+          <button id="btnClearAlarm" class="bg-red-700 hover:bg-red-600 px-4 py-1.5 rounded text-sm">清除告警</button>
+        </div>
+      </div>
+
+      <!-- 日志 -->
+      <div class="flex-1 flex flex-col p-3 overflow-hidden">
+        <div class="flex justify-between items-center mb-2">
+          <h3 class="font-semibold text-slate-300">实时日志</h3>
+          <div class="space-x-2">
+            <button id="btnClearLog" class="text-xs bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded">清空</button>
+            <button id="btnExportLog" class="text-xs bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded">导出</button>
+          </div>
+        </div>
+        <div id="logArea" class="flex-1 bg-black/40 border border-slate-700 rounded-lg p-3 overflow-y-auto scrollbar log-area"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 修改名称弹窗 -->
+  <div id="nameModal" class="fixed inset-0 bg-black/60 flex items-center justify-center hidden z-50">
+    <div class="bg-slate-800 rounded-xl p-6 w-96 border border-slate-600">
+      <h3 class="text-lg font-bold mb-4">修改节点名称</h3>
+      <div class="mb-2 text-sm text-slate-400">节点号：<span id="nameModalId" class="text-cyan-400 font-mono"></span></div>
+      <input id="nameInput" type="text" placeholder="例如：一楼男厕、地下室水泵房、机房门口..." 
+             class="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 mb-4 focus:outline-none focus:border-cyan-500"
+             maxlength="30">
+      <div class="flex justify-end gap-2">
+        <button id="btnCancelName" class="px-4 py-2 bg-slate-600 rounded">取消</button>
+        <button id="btnSaveName" class="px-4 py-2 bg-cyan-600 rounded">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div id="settingsModal" class="fixed inset-0 bg-black/60 flex items-center justify-center hidden z-50">
+    <div class="bg-slate-800 rounded-xl p-6 w-96 border border-slate-600">
+      <h3 class="text-lg font-bold mb-4">系统设置</h3>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm text-slate-400 mb-1">串口波特率</label>
+          <select id="baudRate" class="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2">
+            <option value="9600">9600</option>
+            <option value="115200">115200</option>
+            <option value="57600">57600</option>
+            <option value="38400">38400</option>
+            <option value="19200">19200</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm text-slate-400 mb-1">心跳超时时间（小时）</label>
+          <input id="timeoutHours" type="number" step="0.1" min="1" max="24" value="3.5" class="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2">
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="enableSound" type="checkbox" checked class="w-4 h-4">
+          <label for="enableSound">启用声音告警</label>
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="enableNotify" type="checkbox" checked class="w-4 h-4">
+          <label for="enableNotify">启用浏览器通知</label>
+        </div>
+      </div>
+      <div class="mt-6 flex justify-end gap-2">
+        <button id="btnCloseSettings" class="px-4 py-2 bg-slate-600 rounded">取消</button>
+        <button id="btnSaveSettings" class="px-4 py-2 bg-cyan-600 rounded">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ==================== 全局变量 ====================
+    let port = null;
+    let reader = null;
+    let keepReading = false;
+    let receiveBuffer = '';
+    let selectedNodeId = null;
+    let currentFilter = 'all';
+    let config = {
+      baudRate: 9600,
+      timeoutHours: 3.5,
+      enableSound: true,
+      enableNotify: true
+    };
+
+    // 节点自定义名称
+    let nodeNames = {};
+
+    // 初始化 100 个节点
+    const nodes = {};
+    for (let i = 1; i <= 100; i++) {
+      nodes[i] = {
+        id: i,
+        status: 'offline', // offline | online | alarm
+        lastHeartbeat: null,
+        lastAlarm: null,
+        rssi: null,
+        battery: null,
+        seq: 0
+      };
+    }
+
+    // ==================== DOM 元素 ====================
+    const $ = id => document.getElementById(id);
+    const connStatus = $('connStatus');
+    const btnConnect = $('btnConnect');
+    const btnDisconnect = $('btnDisconnect');
+    const nodeList = $('nodeList');
+    const logArea = $('logArea');
+    const searchInput = $('searchInput');
+    const detailPanel = $('detailPanel');
+
+    // ==================== 工具函数 ====================
+    function pad(n) { return n.toString().padStart(3, '0'); }
+
+    function getNodeName(id) {
+      return nodeNames[id] || ('节点 ' + pad(id));
+    }
+
+    function formatTime(ts) {
+      if (!ts) return '-';
+      const d = new Date(ts);
+      return d.toLocaleString('zh-CN', { hour12: false });
+    }
+    function timeAgo(ts) {
+      if (!ts) return '从未';
+      const sec = Math.floor((Date.now() - ts) / 1000);
+      if (sec < 60) return sec + '秒前';
+      if (sec < 3600) return Math.floor(sec/60) + '分钟前';
+      if (sec < 86400) return Math.floor(sec/3600) + '小时前';
+      return Math.floor(sec/86400) + '天前';
+    }
+
+    function log(msg, type = 'info') {
+      const colors = { info: 'text-slate-300', alarm: 'text-red-400', hb: 'text-green-400', sys: 'text-cyan-400' };
+      const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      const line = document.createElement('div');
+      line.className = colors[type] || colors.info;
+      line.textContent = `[${time}] ${msg}`;
+      logArea.appendChild(line);
+      logArea.scrollTop = logArea.scrollHeight;
+      // 限制日志条数
+      while (logArea.children.length > 500) logArea.removeChild(logArea.firstChild);
+    }
+
+    // ==================== 声音告警 ====================
+    function playAlarmSound() {
+      if (!config.enableSound) return;
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 880;
+        osc.type = 'square';
+        gain.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.5);
+        // 连续响三次
+        setTimeout(() => playAlarmSoundOnce(ctx), 600);
+        setTimeout(() => playAlarmSoundOnce(ctx), 1200);
+      } catch(e) {}
+    }
+    function playAlarmSoundOnce(ctx) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 880;
+      osc.type = 'square';
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.4);
+    }
+
+    // ==================== 浏览器通知 ====================
+    function notify(title, body) {
+      if (!config.enableNotify || !('Notification' in window)) return;
+      if (Notification.permission === 'granted') {
+        new Notification(title, { body, icon: '💧' });
+      } else if (Notification.permission !== 'denied') {
+        Notification.requestPermission().then(p => {
+          if (p === 'granted') new Notification(title, { body });
+        });
+      }
+    }
+
+    // ==================== 节点渲染 ====================
+    function renderNodeList() {
+      const keyword = searchInput.value.trim().toLowerCase();
+      nodeList.innerHTML = '';
+      let list = Object.values(nodes);
+
+      // 过滤
+      if (currentFilter === 'alarm') list = list.filter(n => n.status === 'alarm');
+      else if (currentFilter === 'online') list = list.filter(n => n.status === 'online');
+      else if (currentFilter === 'offline') list = list.filter(n => n.status === 'offline');
+
+      // 搜索（支持节点号和自定义名称）
+      if (keyword) {
+        list = list.filter(n => {
+          const name = getNodeName(n.id).toLowerCase();
+          return name.includes(keyword) || pad(n.id).includes(keyword) || n.id.toString().includes(keyword);
+        });
+      }
+
+      // 排序：告警优先，然后按ID
+      list.sort((a, b) => {
+        if (a.status === 'alarm' && b.status !== 'alarm') return -1;
+        if (b.status === 'alarm' && a.status !== 'alarm') return 1;
+        return a.id - b.id;
+      });
+
+      list.forEach(node => {
+        const div = document.createElement('div');
+        div.className = `node-card flex items-center gap-3 p-2.5 rounded-lg cursor-pointer border border-transparent hover:bg-slate-800 ${node.status === 'alarm' ? 'alarm' : ''} ${selectedNodeId === node.id ? 'bg-slate-700 border-cyan-600' : ''}`;
+        div.dataset.id = node.id;
+
+        let statusText = '', dotClass = '';
+        if (node.status === 'alarm') { statusText = '水浸告警'; dotClass = 'alarm-dot'; }
+        else if (node.status === 'online') { statusText = '在线'; dotClass = 'online'; }
+        else { statusText = '离线'; dotClass = 'offline'; }
+
+        const displayName = getNodeName(node.id);
+
+        div.innerHTML = `
+          <span class="status-dot ${dotClass}"></span>
+          <div class="flex-1 min-w-0">
+            <div class="font-medium truncate" title="${displayName}">${displayName}</div>
+            <div class="text-xs text-slate-400 truncate">#${pad(node.id)} · ${statusText} · ${timeAgo(node.lastHeartbeat)}</div>
+          </div>
+        `;
+        div.onclick = () => selectNode(node.id);
+        nodeList.appendChild(div);
+      });
+
+      updateStats();
+    }
+
+    function updateStats() {
+      let online = 0, offline = 0, alarm = 0;
+      Object.values(nodes).forEach(n => {
+        if (n.status === 'alarm') alarm++;
+        else if (n.status === 'online') online++;
+        else offline++;
+      });
+      $('statOnline').textContent = online;
+      $('statOffline').textContent = offline;
+      $('statAlarm').textContent = alarm;
+    }
+
+    function selectNode(id) {
+      selectedNodeId = id;
+      const node = nodes[id];
+      detailPanel.classList.remove('hidden');
+      
+      $('detailName').textContent = getNodeName(id);
+      $('detailId').textContent = pad(id);
+
+      let statusHtml = '';
+      if (node.status === 'alarm') statusHtml = '<span class="text-red-400 font-bold">🔴 水浸告警</span>';
+      else if (node.status === 'online') statusHtml = '<span class="text-green-400">🟢 在线正常</span>';
+      else statusHtml = '<span class="text-slate-400">⚫ 离线</span>';
+      $('detailStatus').innerHTML = statusHtml;
+
+      $('detailLastHb').textContent = formatTime(node.lastHeartbeat) + (node.lastHeartbeat ? ` (${timeAgo(node.lastHeartbeat)})` : '');
+      $('detailLastAl').textContent = formatTime(node.lastAlarm) || '无';
+      $('detailRssi').textContent = node.rssi !== null ? node.rssi + ' dBm' : '-';
+      $('detailBat').textContent = node.battery !== null ? node.battery + ' V' : '-';
+
+      renderNodeList();
+    }
+
+    // ==================== 协议解析 ====================
+    function processLine(line) {
+      line = line.trim();
+      if (!line) return;
+
+      // 支持 HB,023,1542,-87,3.25,0  或 AL,23,1,-85,3.2,1
+      const parts = line.split(',');
+      if (parts.length < 2) return;
+
+      const type = parts[0].toUpperCase();
+      const id = parseInt(parts[1], 10);
+      if (isNaN(id) || id < 1 || id > 100) return;
+
+      const node = nodes[id];
+      const seq = parts[2] ? parseInt(parts[2]) : 0;
+      const rssi = parts[3] !== undefined && parts[3] !== '' ? parseFloat(parts[3]) : null;
+      const bat = parts[4] !== undefined && parts[4] !== '' ? parseFloat(parts[4]) : null;
+      const statusFlag = parts[5] !== undefined ? parseInt(parts[5]) : (type === 'AL' ? 1 : 0);
+
+      node.seq = seq;
+      if (rssi !== null) node.rssi = rssi;
+      if (bat !== null) node.battery = bat;
+
+      const name = getNodeName(id);
+
+      if (type === 'AL' || statusFlag === 1) {
+        // 水浸告警
+        const isNewAlarm = node.status !== 'alarm';
+        node.status = 'alarm';
+        node.lastAlarm = Date.now();
+        node.lastHeartbeat = Date.now(); // 告警也算活跃
+
+        log(`${name}（#${pad(id)}）上报【水浸告警】 RSSI:${rssi??'-'} 电池:${bat??'-'}V`, 'alarm');
+        if (isNewAlarm) {
+          playAlarmSound();
+          notify('水浸告警！', `${name}（节点 ${pad(id)}）检测到水浸`);
+        }
+      } else if (type === 'HB') {
+        // 心跳
+        const wasOffline = node.status === 'offline';
+        if (node.status !== 'alarm') node.status = 'online'; // 有告警时心跳不覆盖告警状态
+        node.lastHeartbeat = Date.now();
+        log(`${name}（#${pad(id)}）心跳正常  RSSI:${rssi??'-'} 电池:${bat??'-'}V`, 'hb');
+        if (wasOffline) log(`${name}（#${pad(id)}）已恢复在线`, 'sys');
+      }
+
+      if (selectedNodeId === id) selectNode(id);
+      renderNodeList();
+    }
+
+    // ==================== 串口读写 ====================
+    async function connectSerial() {
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: config.baudRate });
+
+        connStatus.textContent = '已连接';
+        connStatus.className = 'text-sm px-3 py-1 rounded-full bg-green-900 text-green-300';
+        btnConnect.classList.add('hidden');
+        btnDisconnect.classList.remove('hidden');
+        log(`串口已连接，波特率 ${config.baudRate}`, 'sys');
+
+        keepReading = true;
+        readLoop();
+      } catch (err) {
+        log('连接失败: ' + err.message, 'alarm');
+        console.error(err);
+      }
+    }
+
+    async function disconnectSerial() {
+      keepReading = false;
+      try {
+        if (reader) {
+          await reader.cancel();
+          reader = null;
+        }
+        if (port) {
+          await port.close();
+          port = null;
+        }
+      } catch(e) {}
+      connStatus.textContent = '未连接';
+      connStatus.className = 'text-sm px-3 py-1 rounded-full bg-slate-700 text-slate-300';
+      btnConnect.classList.remove('hidden');
+      btnDisconnect.classList.add('hidden');
+      log('串口已断开', 'sys');
+    }
+
+    async function readLoop() {
+      const decoder = new TextDecoder();
+      while (port && port.readable && keepReading) {
+        reader = port.readable.getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            receiveBuffer += decoder.decode(value, { stream: true });
+            // 按行处理
+            let idx;
+            while ((idx = receiveBuffer.indexOf('\n')) >= 0) {
+              const line = receiveBuffer.slice(0, idx);
+              receiveBuffer = receiveBuffer.slice(idx + 1);
+              processLine(line.replace(/\r$/, ''));
+            }
+            // 防止缓冲区过大
+            if (receiveBuffer.length > 4096) receiveBuffer = receiveBuffer.slice(-1024);
+          }
+        } catch (err) {
+          if (keepReading) log('读取错误: ' + err.message, 'alarm');
+        } finally {
+          reader.releaseLock();
+        }
+      }
+    }
+
+    // ==================== 超时检测 ====================
+    function checkTimeouts() {
+      const timeoutMs = config.timeoutHours * 3600 * 1000;
+      const now = Date.now();
+      let changed = false;
+      Object.values(nodes).forEach(node => {
+        if (node.status === 'online' && node.lastHeartbeat && (now - node.lastHeartbeat > timeoutMs)) {
+          node.status = 'offline';
+          log(`${getNodeName(node.id)}（#${pad(node.id)}）心跳超时，标记为离线`, 'sys');
+          changed = true;
+        }
+      });
+      if (changed) {
+        renderNodeList();
+        if (selectedNodeId) selectNode(selectedNodeId);
+      }
+    }
+
+    // ==================== 名称编辑 ====================
+    function openNameEditor() {
+      if (!selectedNodeId) return;
+      $('nameModalId').textContent = pad(selectedNodeId);
+      $('nameInput').value = nodeNames[selectedNodeId] || '';
+      $('nameModal').classList.remove('hidden');
+      setTimeout(() => {
+        $('nameInput').focus();
+        $('nameInput').select();
+      }, 50);
+    }
+
+    function saveNodeName() {
+      if (!selectedNodeId) return;
+      const newName = $('nameInput').value.trim();
+      if (newName) {
+        nodeNames[selectedNodeId] = newName;
+      } else {
+        delete nodeNames[selectedNodeId];
+      }
+      localStorage.setItem('waterSensorNodeNames', JSON.stringify(nodeNames));
+      $('nameModal').classList.add('hidden');
+      selectNode(selectedNodeId);
+      log(`节点 #${pad(selectedNodeId)} 名称已更新为：${getNodeName(selectedNodeId)}`, 'sys');
+    }
+
+    // ==================== 事件绑定 ====================
+    btnConnect.onclick = connectSerial;
+    btnDisconnect.onclick = disconnectSerial;
+
+    // 名称编辑事件
+    $('btnEditName').onclick = openNameEditor;
+    $('btnCancelName').onclick = () => $('nameModal').classList.add('hidden');
+    $('btnSaveName').onclick = saveNodeName;
+    $('nameInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') saveNodeName();
+      if (e.key === 'Escape') $('nameModal').classList.add('hidden');
+    });
+
+    $('btnSettings').onclick = () => {
+      $('baudRate').value = config.baudRate;
+      $('timeoutHours').value = config.timeoutHours;
+      $('enableSound').checked = config.enableSound;
+      $('enableNotify').checked = config.enableNotify;
+      $('settingsModal').classList.remove('hidden');
+    };
+    $('btnCloseSettings').onclick = () => $('settingsModal').classList.add('hidden');
+    $('btnSaveSettings').onclick = () => {
+      config.baudRate = parseInt($('baudRate').value);
+      config.timeoutHours = parseFloat($('timeoutHours').value) || 3.5;
+      config.enableSound = $('enableSound').checked;
+      config.enableNotify = $('enableNotify').checked;
+      localStorage.setItem('waterSensorConfig', JSON.stringify(config));
+      $('settingsModal').classList.add('hidden');
+      log('设置已保存', 'sys');
+    };
+
+    $('btnClearAlarm').onclick = () => {
+      if (selectedNodeId && nodes[selectedNodeId].status === 'alarm') {
+        nodes[selectedNodeId].status = nodes[selectedNodeId].lastHeartbeat ? 'online' : 'offline';
+        log(`手动清除 ${getNodeName(selectedNodeId)}（#${pad(selectedNodeId)}）告警`, 'sys');
+        selectNode(selectedNodeId);
+        renderNodeList();
+      }
+    };
+
+    $('btnClearLog').onclick = () => { logArea.innerHTML = ''; };
+    $('btnExportLog').onclick = () => {
+      const text = Array.from(logArea.children).map(el => el.textContent).join('\n');
+      const blob = new Blob([text], { type: 'text/plain' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `water-sensor-log-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.txt`;
+      a.click();
+    };
+
+    searchInput.oninput = renderNodeList;
+
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.onclick = () => {
+        document.querySelectorAll('.filter-btn').forEach(b => {
+          b.classList.remove('active', 'bg-cyan-700');
+          b.classList.add('bg-slate-700');
+        });
+        btn.classList.add('active', 'bg-cyan-700');
+        btn.classList.remove('bg-slate-700');
+        currentFilter = btn.dataset.filter;
+        renderNodeList();
+      };
+    });
+
+    // ==================== 初始化 ====================
+    // 加载配置
+    try {
+      const saved = localStorage.getItem('waterSensorConfig');
+      if (saved) Object.assign(config, JSON.parse(saved));
+    } catch(e) {}
+
+    // 加载节点名称
+    try {
+      const savedNames = localStorage.getItem('waterSensorNodeNames');
+      if (savedNames) nodeNames = JSON.parse(savedNames) || {};
+    } catch(e) {
+      nodeNames = {};
+    }
+
+    // 请求通知权限
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
+    // 检查浏览器支持
+    if (!('serial' in navigator)) {
+      log('当前浏览器不支持 Web Serial API，请使用 Chrome 或 Edge', 'alarm');
+      btnConnect.disabled = true;
+    } else {
+      log('系统就绪，请点击“连接串口”选择 HC-14 对应串口', 'sys');
+      log('提示：点击节点后，可在详情页修改自定义名称', 'sys');
+    }
+
+    renderNodeList();
+    // 每 30 秒检查一次超时
+    setInterval(checkTimeouts, 30000);
+    // 每分钟刷新一次“多久前”
+    setInterval(() => {
+      renderNodeList();
+      if (selectedNodeId) selectNode(selectedNodeId);
+    }, 60000);
+  </script>
+</body>
+</html>
